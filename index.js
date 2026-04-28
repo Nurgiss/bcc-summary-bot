@@ -1491,8 +1491,26 @@ bot.action('send_summary_to_group', async (ctx) => {
   const pending = loadPendingSummary();
   if (!pending) { await ctx.reply('❌ Саммари не найдено. Возможно уже было отправлено.', mainMenu()); return; }
   const targetChat = GROUP_CHAT_ID || NOTIFY_CHAT_ID;
+  const MAX = 3900;
   try {
-    await bot.telegram.sendMessage(targetChat, pending.summary, { parse_mode: 'HTML' });
+    // Разбиваем на саммари + tensions отдельно, каждое по частям
+    const summaryPart = pending.summaryOnly || pending.summary;
+    const tensionsPart = pending.tensionsBlock || '';
+
+    // Отправляем саммари (по частям если нужно)
+    let text = summaryPart;
+    while (text.length > 0) {
+      await bot.telegram.sendMessage(targetChat, text.slice(0, MAX), { parse_mode: 'HTML', disable_web_page_preview: true });
+      text = text.slice(MAX);
+    }
+    // Отправляем tensions отдельно
+    if (tensionsPart) {
+      let ttext = tensionsPart.trim();
+      while (ttext.length > 0) {
+        await bot.telegram.sendMessage(targetChat, ttext.slice(0, MAX), { parse_mode: 'HTML', disable_web_page_preview: true });
+        ttext = ttext.slice(MAX);
+      }
+    }
     clearPendingSummary();
     await ctx.editMessageReplyMarkup({ inline_keyboard: [] }).catch(() => {});
     await ctx.reply('✅ Саммари отправлено в группу!', mainMenu());
