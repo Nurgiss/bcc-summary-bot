@@ -592,6 +592,85 @@ bot.command('testrotation', async (ctx) => {
   ).catch(() => {});
 });
 
+// ─── Tensions: статусы от команды прямо в группе ─────────────────────────────
+// Строит текст + кнопки для группового сообщения с tensions
+function buildGroupTensionsMessage(tensions) {
+  if (!tensions || tensions.length === 0) return { text: '✅ Открытых tensions нет!', buttons: [] };
+  const lines = tensions.map((t, i) => {
+    const s = t.status || '🔴';
+    const imya = t.imya ? `<b>${t.imya}</b>` : '?';
+    const days = t.dateAdded ? Math.floor((Date.now() - new Date(t.dateAdded)) / 86400000) : null;
+    let line = `${s} ${imya}: ${t.vopros}`;
+    if (t.pochemu) line += `\n   <i>→ ${t.pochemu}</i>`;
+    if (days !== null) line += `\n   <i>📅 ${days} дн. открыт</i>`;
+    return line;
+  });
+  const text = `📌 <b>Tensions команды (${tensions.length} открытых):</b>\n\nОбнови статус кнопкой ниже 👇\n\n${lines.join('\n\n')}`;
+  const buttons = tensions.map((t, i) => {
+    const short = (t.vopros || '').slice(0, 28);
+    return [
+      Markup.button.callback(`🟡 В процессе: ${short}`, `gt_prog_${i}`),
+      Markup.button.callback(`✅ Решено: ${short}`, `gt_close_${i}`)
+    ];
+  });
+  return { text, buttons: Markup.inlineKeyboard(buttons) };
+}
+
+// Обновляет сообщение в группе после изменения статуса
+async function refreshGroupTensionsMsg(ctx, chatId, msgId) {
+  const open = loadSavedTensions().filter(t => t.reshili !== 'да' && t.reshili !== 'Да');
+  if (open.length === 0) {
+    await bot.telegram.editMessageText(chatId, msgId, undefined,
+      '✅ <b>Все tensions закрыты!</b> Отлично поработали 🎉',
+      { parse_mode: 'HTML' }
+    ).catch(() => {});
+    return;
+  }
+  const { text, buttons } = buildGroupTensionsMessage(open);
+  await bot.telegram.editMessageText(chatId, msgId, undefined, text,
+    { parse_mode: 'HTML', ...buttons }
+  ).catch(() => {});
+}
+
+bot.action(/^gt_close_(\d+)$/, async (ctx) => {
+  await ctx.answerCbQuery();
+  const idx = parseInt(ctx.match[1]);
+  const all = loadSavedTensions();
+  const open = all.filter(t => t.reshili !== 'да' && t.reshili !== 'Да');
+  const target = open[idx];
+  if (!target) { await ctx.answerCbQuery('❌ Tension не найден'); return; }
+  const allIdx = all.findIndex(t => t.imya === target.imya && t.vopros === target.vopros);
+  if (allIdx !== -1) {
+    all[allIdx].reshili = 'да';
+    all[allIdx].status = '✅';
+    all[allIdx].dateClosed = new Date().toISOString();
+    all[allIdx].closedBy = ctx.from?.first_name || ctx.from?.username || 'Участник';
+    fs.writeFileSync(TENSIONS_FILE, JSON.stringify(all, null, 2), 'utf8');
+  }
+  const who = ctx.from?.first_name || ctx.from?.username || 'Участник';
+  await ctx.answerCbQuery(`✅ ${who} закрыл tension`);
+  await refreshGroupTensionsMsg(ctx, ctx.chat.id, ctx.callbackQuery.message.message_id);
+});
+
+bot.action(/^gt_prog_(\d+)$/, async (ctx) => {
+  await ctx.answerCbQuery();
+  const idx = parseInt(ctx.match[1]);
+  const all = loadSavedTensions();
+  const open = all.filter(t => t.reshili !== 'да' && t.reshili !== 'Да');
+  const target = open[idx];
+  if (!target) { await ctx.answerCbQuery('❌ Tension не найден'); return; }
+  const allIdx = all.findIndex(t => t.imya === target.imya && t.vopros === target.vopros);
+  if (allIdx !== -1) {
+    all[allIdx].reshili = 'в процессе';
+    all[allIdx].status = '🟡';
+    all[allIdx].inProgressBy = ctx.from?.first_name || ctx.from?.username || 'Участник';
+    fs.writeFileSync(TENSIONS_FILE, JSON.stringify(all, null, 2), 'utf8');
+  }
+  const who = ctx.from?.first_name || ctx.from?.username || 'Участник';
+  await ctx.answerCbQuery(`🟡 ${who} взял в работу`);
+  await refreshGroupTensionsMsg(ctx, ctx.chat.id, ctx.callbackQuery.message.message_id);
+});
+
 bot.use(async (ctx, next) => {
   const chatType = ctx.chat?.type;
   if (chatType === 'group' || chatType === 'supergroup' || chatType === 'channel') return;
@@ -1508,9 +1587,7 @@ bot.action('send_summary_to_group', async (ctx) => {
   const targetChat = GROUP_CHAT_ID || NOTIFY_CHAT_ID;
   const MAX = 3900;
   try {
-    // Разбиваем на саммари + tensions отдельно, каждое по частям
     const summaryPart = pending.summaryOnly || pending.summary;
-    const tensionsPart = pending.tensionsBlock || '';
 
     // Отправляем саммари (по частям если нужно)
     let text = summaryPart;
@@ -1518,14 +1595,14 @@ bot.action('send_summary_to_group', async (ctx) => {
       await bot.telegram.sendMessage(targetChat, text.slice(0, MAX), { parse_mode: 'HTML', disable_web_page_preview: true });
       text = text.slice(MAX);
     }
-    // Отправляем tensions отдельно
-    if (tensionsPart) {
-      let ttext = tensionsPart.trim();
-      while (ttext.length > 0) {
-        await bot.telegram.sendMessage(targetChat, ttext.slice(0, MAX), { parse_mode: 'HTML', disable_web_page_preview: true });
-        ttext = ttext.slice(MAX);
-      }
+
+    // Отправляем tensions как интерактивное сообщение с кнопками статусов
+    const openTensions = loadSavedTensions().filter(t => t.reshili !== 'да' && t.reshili !== 'Да');
+    if (openTensions.length > 0) {
+      const { text: tText, buttons } = buildGroupTensionsMessage(openTensions);
+      await bot.telegram.sendMessage(targetChat, tText, { parse_mode: 'HTML', ...buttons });
     }
+
     clearPendingSummary();
     await ctx.editMessageReplyMarkup({ inline_keyboard: [] }).catch(() => {});
     await ctx.reply('✅ Саммари отправлено в группу!', mainMenu());
