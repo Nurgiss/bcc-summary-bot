@@ -17,11 +17,6 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4.1-mini';
 const GROUP_CHAT_ID = process.env.GROUP_CHAT_ID;
 const NOTIFY_CHAT_ID = process.env.NOTIFY_CHAT_ID;
-const JIRA_BASE_URL = (process.env.JIRA_BASE_URL || '').replace(/\/$/, '');
-const JIRA_PROJECT_KEY = process.env.JIRA_PROJECT_KEY || '';
-const JIRA_ISSUE_TYPE = process.env.JIRA_ISSUE_TYPE || 'Task';
-const JIRA_USER_EMAIL = process.env.JIRA_USER_EMAIL || '';
-const JIRA_API_TOKEN = process.env.JIRA_API_TOKEN || '';
 const OUTPUT_DIR = path.join(__dirname, 'output');
 const MEETING_HOUR = parseInt(process.env.MEETING_HOUR || '12');
 const MEETING_TZ = process.env.MEETING_TIMEZONE || 'Asia/Almaty';
@@ -146,67 +141,6 @@ function loadSavedTensions() {
   return [];
 }
 
-function hasJiraConfig() {
-  return Boolean(JIRA_BASE_URL && JIRA_PROJECT_KEY && JIRA_API_TOKEN);
-}
-
-function jiraHeaders() {
-  if (!hasJiraConfig()) throw new Error('Jira не настроена: проверь JIRA_BASE_URL, JIRA_PROJECT_KEY, JIRA_API_TOKEN');
-  if (JIRA_USER_EMAIL) {
-    const token = Buffer.from(`${JIRA_USER_EMAIL}:${JIRA_API_TOKEN}`).toString('base64');
-    return { Authorization: `Basic ${token}`, 'Content-Type': 'application/json' };
-  }
-  return { Authorization: `Bearer ${JIRA_API_TOKEN}`, 'Content-Type': 'application/json' };
-}
-
-function jiraIssueUrl(issueKey) {
-  return `${JIRA_BASE_URL}/browse/${issueKey}`;
-}
-
-async function jiraRequest(method, apiPath, data) {
-  const url = `${JIRA_BASE_URL}${apiPath}`;
-  const res = await axios({ method, url, headers: jiraHeaders(), data, timeout: 20000 });
-  return res.data;
-}
-
-async function createJiraIssueFromTension(t) {
-  const summary = `[Tension] ${t.imya || 'Без имени'}: ${(t.vopros || '').slice(0, 180)}`;
-  const description = [
-    `Имя: ${t.imya || '—'}`,
-    `Что вызывает напряжение: ${t.vopros || '—'}`,
-    `Почему важно: ${t.pochemu || '—'}`,
-    `Возможные шаги: ${t.shagi || '—'}`,
-    `Статус в боте: ${t.status || '🔴'}`,
-    `Добавлен: ${t.dateAdded ? new Date(t.dateAdded).toLocaleString('ru-RU') : '—'}`
-  ].join('\n');
-
-  const payload = {
-    fields: {
-      project: { key: JIRA_PROJECT_KEY },
-      issuetype: { name: JIRA_ISSUE_TYPE },
-      summary,
-      description,
-      labels: ['tension', 'design-circle']
-    }
-  };
-
-  return jiraRequest('post', '/rest/api/2/issue', payload);
-}
-
-async function addJiraComment(issueKey, body) {
-  return jiraRequest('post', `/rest/api/2/issue/${issueKey}/comment`, { body });
-}
-
-async function transitionJiraIssue(issueKey, desiredName) {
-  const transitions = await jiraRequest('get', `/rest/api/2/issue/${issueKey}/transitions`);
-  const list = transitions?.transitions || [];
-  const lower = desiredName.toLowerCase();
-  const found = list.find(t => (t.name || '').toLowerCase().includes(lower));
-  if (!found) return false;
-  await jiraRequest('post', `/rest/api/2/issue/${issueKey}/transitions`, { transition: { id: found.id } });
-  return true;
-}
-
 async function saveTensionsFromRawText(rawText, dateTag) {
   try {
     const resp = await openai.chat.completions.create({
@@ -242,25 +176,16 @@ async function saveTensionsFromRawText(rawText, dateTag) {
     const jsonMatch = raw.match(/\[[\s\S]*\]/);
     if (!jsonMatch) { console.log('Tensions: пустой JSON от GPT'); return; }
 
-    const existing = loadSavedTensions();
-    const byKey = new Map(existing.map(x => [`${(x.imya || '').trim()}|${(x.vopros || '').trim()}`, x]));
-    const tensions = JSON.parse(jsonMatch[0]).map(t => {
-      const imya = t.imya || t.person || t.name || t['имя'] || '';
-      const vopros = t.vopros || t.tension || t.question || t['вопрос'] || '';
-      const prev = byKey.get(`${imya.trim()}|${vopros.trim()}`) || {};
-      return {
-        imya,
-        vopros,
-        pochemu: t.pochemu || t.importance || t.why || t['почему'] || prev.pochemu || '',
-        shagi:   t.shagi || (Array.isArray(t.possible_steps) ? t.possible_steps.join('; ') : t.possible_steps) || t.steps || t['шаги'] || prev.shagi || '',
-        reshili: t.reshili || t.resolved || prev.reshili || 'нет',
-        data:    t.data || t.deadline || prev.data || '',
-        status:  t.status || prev.status || '🔴',
-        dateAdded: prev.dateAdded || new Date().toISOString(),
-        jiraKey: prev.jiraKey || '',
-        jiraUrl: prev.jiraUrl || ''
-      };
-    });
+    const tensions = JSON.parse(jsonMatch[0]).map(t => ({
+      imya:    t.imya    || t.person || t.name || t['имя'] || '',
+      vopros:  t.vopros  || t.tension || t.question || t['вопрос'] || '',
+      pochemu: t.pochemu || t.importance || t.why || t['почему'] || '',
+      shagi:   t.shagi   || (Array.isArray(t.possible_steps) ? t.possible_steps.join('; ') : t.possible_steps) || t.steps || t['шаги'] || '',
+      reshili: t.reshili || t.resolved || 'нет',
+      data:    t.data    || t.deadline || '',
+      status:  t.status  || '🔴',
+      dateAdded: new Date().toISOString()
+    }));
 
     if (tensions.length > 0) {
       fs.writeFileSync(TENSIONS_FILE, JSON.stringify(tensions, null, 2), 'utf8');
@@ -721,12 +646,6 @@ bot.action(/^gt_close_(\d+)$/, async (ctx) => {
     all[allIdx].dateClosed = new Date().toISOString();
     all[allIdx].closedBy = ctx.from?.first_name || ctx.from?.username || 'Участник';
     fs.writeFileSync(TENSIONS_FILE, JSON.stringify(all, null, 2), 'utf8');
-    if (all[allIdx].jiraKey && hasJiraConfig()) {
-      const who = ctx.from?.first_name || ctx.from?.username || 'Участник';
-      await addJiraComment(all[allIdx].jiraKey, `✅ Закрыто в Telegram пользователем ${who}`);
-      await transitionJiraIssue(all[allIdx].jiraKey, 'done').catch(() => {});
-      await transitionJiraIssue(all[allIdx].jiraKey, 'resolved').catch(() => {});
-    }
   }
   const who = ctx.from?.first_name || ctx.from?.username || 'Участник';
   await ctx.answerCbQuery(`✅ ${who} закрыл tension`);
@@ -746,12 +665,6 @@ bot.action(/^gt_prog_(\d+)$/, async (ctx) => {
     all[allIdx].status = '🟡';
     all[allIdx].inProgressBy = ctx.from?.first_name || ctx.from?.username || 'Участник';
     fs.writeFileSync(TENSIONS_FILE, JSON.stringify(all, null, 2), 'utf8');
-    if (all[allIdx].jiraKey && hasJiraConfig()) {
-      const who = ctx.from?.first_name || ctx.from?.username || 'Участник';
-      await addJiraComment(all[allIdx].jiraKey, `🟡 Переведено в работу в Telegram пользователем ${who}`);
-      await transitionJiraIssue(all[allIdx].jiraKey, 'progress').catch(() => {});
-      await transitionJiraIssue(all[allIdx].jiraKey, 'in progress').catch(() => {});
-    }
   }
   const who = ctx.from?.first_name || ctx.from?.username || 'Участник';
   await ctx.answerCbQuery(`🟡 ${who} взял в работу`);
@@ -780,39 +693,6 @@ bot.command('menu', async (ctx) => {
 bot.command('cancel', async (ctx) => {
   resetSession(ctx);
   await ctx.reply('Сброшено.', mainMenu());
-});
-
-bot.command('jira_sync_tensions', async (ctx) => {
-  if (!hasJiraConfig()) {
-    await ctx.reply('❌ Jira не настроена. Нужны JIRA_BASE_URL, JIRA_PROJECT_KEY, JIRA_API_TOKEN.', mainMenu());
-    return;
-  }
-  const all = loadSavedTensions();
-  const openIdx = all
-    .map((t, idx) => ({ t, idx }))
-    .filter(({ t }) => t.reshili !== 'да' && t.reshili !== 'Да');
-
-  if (openIdx.length === 0) {
-    await ctx.reply('✅ Открытых tensions нет.', mainMenu());
-    return;
-  }
-
-  let created = 0;
-  let skipped = 0;
-  for (const item of openIdx) {
-    if (item.t.jiraKey) { skipped++; continue; }
-    try {
-      const issue = await createJiraIssueFromTension(item.t);
-      all[item.idx].jiraKey = issue.key;
-      all[item.idx].jiraUrl = jiraIssueUrl(issue.key);
-      created++;
-    } catch (e) {
-      console.error('Jira sync error:', e.message);
-    }
-  }
-
-  fs.writeFileSync(TENSIONS_FILE, JSON.stringify(all, null, 2), 'utf8');
-  await ctx.reply(`🧩 Jira sync завершён:\nСоздано: ${created}\nПропущено (уже были): ${skipped}`, mainMenu());
 });
 
 bot.command('team', async (ctx) => {
@@ -1631,48 +1511,12 @@ bot.action(/^tension_detail_(\d+)$/, async (ctx) => {
   if (t.shagi) card += `🚶 <b>Шаги / кто поможет:</b>\n${t.shagi}\n\n`;
   card += `📅 Добавлен: ${dateAdded} (${days} дн. назад)`;
   if (t.data) card += `\n⏰ Дедлайн: ${t.data}`;
-  const jiraLine = t.jiraKey ? `\n🔗 Jira: ${t.jiraKey}` : '';
-  card += jiraLine;
-  const jiraButton = t.jiraUrl
-    ? [Markup.button.url(`🔗 Открыть ${t.jiraKey || 'в Jira'}`, t.jiraUrl)]
-    : [Markup.button.callback('🧩 Создать задачу в Jira', `t_jira_${idx}`)];
   const buttons = Markup.inlineKeyboard([
-    jiraButton,
     [Markup.button.callback('✅ Решено — закрыть', `t_close_${idx}`)],
     [Markup.button.callback('🟡 В процессе', `t_inprogress_${idx}`)],
     [Markup.button.callback('◀️ Назад к списку', 'tensions_menu')]
   ]);
   await ctx.reply(card, { parse_mode: 'HTML', ...buttons });
-});
-
-bot.action(/^t_jira_(\d+)$/, async (ctx) => {
-  await ctx.answerCbQuery();
-  if (!hasJiraConfig()) {
-    await ctx.reply('❌ Jira не настроена. Нужны JIRA_BASE_URL, JIRA_PROJECT_KEY, JIRA_API_TOKEN.', mainMenu());
-    return;
-  }
-  const idx = parseInt(ctx.match[1]);
-  const all = loadSavedTensions();
-  const open = all.filter(t => t.reshili !== 'да' && t.reshili !== 'Да');
-  const target = open[idx];
-  if (!target) { await ctx.reply('❌ Tension не найден.', mainMenu()); return; }
-  const allIdx = all.findIndex(t => t.imya === target.imya && t.vopros === target.vopros);
-  if (allIdx === -1) { await ctx.reply('❌ Tension не найден.', mainMenu()); return; }
-
-  if (all[allIdx].jiraKey && all[allIdx].jiraUrl) {
-    await ctx.reply(`ℹ️ Уже создано: ${all[allIdx].jiraKey}\n${all[allIdx].jiraUrl}`);
-    return;
-  }
-
-  try {
-    const issue = await createJiraIssueFromTension(all[allIdx]);
-    all[allIdx].jiraKey = issue.key;
-    all[allIdx].jiraUrl = jiraIssueUrl(issue.key);
-    fs.writeFileSync(TENSIONS_FILE, JSON.stringify(all, null, 2), 'utf8');
-    await ctx.reply(`✅ Создано в Jira: ${issue.key}\n${all[allIdx].jiraUrl}`);
-  } catch (e) {
-    await ctx.reply(`❌ Не удалось создать задачу в Jira: ${e.message}`);
-  }
 });
 
 bot.action(/^t_close_(\d+)$/, async (ctx) => {
@@ -1685,15 +1529,8 @@ bot.action(/^t_close_(\d+)$/, async (ctx) => {
   const allIdx = all.findIndex(t => t.imya === target.imya && t.vopros === target.vopros);
   if (allIdx !== -1) {
     all[allIdx].reshili = 'да';
-    all[allIdx].status = '✅';
     all[allIdx].dateClosed = new Date().toISOString();
     fs.writeFileSync(TENSIONS_FILE, JSON.stringify(all, null, 2), 'utf8');
-    if (all[allIdx].jiraKey && hasJiraConfig()) {
-      const who = ctx.from?.first_name || ctx.from?.username || 'Участник';
-      await addJiraComment(all[allIdx].jiraKey, `✅ Закрыто в Telegram пользователем ${who}`);
-      await transitionJiraIssue(all[allIdx].jiraKey, 'done').catch(() => {});
-      await transitionJiraIssue(all[allIdx].jiraKey, 'resolved').catch(() => {});
-    }
   }
   const remaining = all.filter(t => t.reshili !== 'да' && t.reshili !== 'Да');
   if (remaining.length === 0) {
@@ -1716,12 +1553,6 @@ bot.action(/^t_inprogress_(\d+)$/, async (ctx) => {
     all[allIdx].reshili = 'в процессе';
     all[allIdx].status = '🟡';
     fs.writeFileSync(TENSIONS_FILE, JSON.stringify(all, null, 2), 'utf8');
-    if (all[allIdx].jiraKey && hasJiraConfig()) {
-      const who = ctx.from?.first_name || ctx.from?.username || 'Участник';
-      await addJiraComment(all[allIdx].jiraKey, `🟡 Переведено в работу в Telegram пользователем ${who}`);
-      await transitionJiraIssue(all[allIdx].jiraKey, 'progress').catch(() => {});
-      await transitionJiraIssue(all[allIdx].jiraKey, 'in progress').catch(() => {});
-    }
   }
   await ctx.reply(`🟡 Отмечено «в процессе».`, { parse_mode: 'HTML', ...tensionsListButtons(all.filter(t => t.reshili !== 'да' && t.reshili !== 'Да')) });
 });
