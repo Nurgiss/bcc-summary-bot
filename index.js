@@ -1002,15 +1002,17 @@ bot.on('text', async (ctx) => {
 
   // ─── Дополнение к итогам встречи ─────────────────────────────────────────
   if (session.stage === 'waiting_summary_addition') {
-    session.stage = 'idle';
-    const targetChat = GROUP_CHAT_ID || NOTIFY_CHAT_ID;
     const addition = `➕ <b>Дополнение к итогам:</b>\n\n${text}`;
-    try {
-      await bot.telegram.sendMessage(targetChat, addition, { parse_mode: 'HTML' });
-      await ctx.reply('✅ Добавлено в чат!', mainMenu());
-    } catch (e) {
-      await ctx.reply(`❌ Не удалось отправить: ${e.message}`, mainMenu());
-    }
+    session.pendingSummaryAddition = addition;
+    session.stage = 'confirm_summary_addition';
+    await ctx.reply(
+      `👀 <b>Превью дополнения:</b>\n\n${addition}\n\n─────────────────\nОтправить в группу?`,
+      { parse_mode: 'HTML', ...Markup.inlineKeyboard([
+        [Markup.button.callback('✅ Отправить в группу', 'summary_addition_confirm')],
+        [Markup.button.callback('✏️ Изменить', 'summary_addition_edit')],
+        [Markup.button.callback('❌ Отмена', 'summary_addition_cancel')]
+      ]) }
+    );
     return;
   }
 
@@ -1327,6 +1329,40 @@ bot.action('add_to_summary', async (ctx) => {
   const session = getOrCreateSession(ctx);
   session.stage = 'waiting_summary_addition';
   await ctx.reply('💬 Напиши что добавить к итогам встречи:\n\n(Например: дополнительный пункт по задачам, важное решение или комментарий)');
+});
+
+bot.action('summary_addition_confirm', async (ctx) => {
+  await ctx.answerCbQuery();
+  const session = getOrCreateSession(ctx);
+  const addition = session.pendingSummaryAddition;
+  session.stage = 'idle';
+  delete session.pendingSummaryAddition;
+  if (!addition) { await ctx.reply('❌ Нечего отправлять.', mainMenu()); return; }
+  const targetChat = GROUP_CHAT_ID || NOTIFY_CHAT_ID;
+  try {
+    await bot.telegram.sendMessage(targetChat, addition, { parse_mode: 'HTML' });
+    await ctx.editMessageReplyMarkup({ inline_keyboard: [] }).catch(() => {});
+    await ctx.reply('✅ Дополнение отправлено в группу!', mainMenu());
+  } catch (e) {
+    await ctx.reply(`❌ Не удалось отправить: ${e.message}`, mainMenu());
+  }
+});
+
+bot.action('summary_addition_edit', async (ctx) => {
+  await ctx.answerCbQuery();
+  const session = getOrCreateSession(ctx);
+  session.stage = 'waiting_summary_addition';
+  delete session.pendingSummaryAddition;
+  await ctx.reply('✏️ Напиши новый текст дополнения:');
+});
+
+bot.action('summary_addition_cancel', async (ctx) => {
+  await ctx.answerCbQuery();
+  const session = getOrCreateSession(ctx);
+  session.stage = 'idle';
+  delete session.pendingSummaryAddition;
+  await ctx.editMessageReplyMarkup({ inline_keyboard: [] }).catch(() => {});
+  await ctx.reply('❌ Отменено.', mainMenu());
 });
 
 // ─── Статистика ───────────────────────────────────────────────────────────────
