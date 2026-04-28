@@ -976,7 +976,29 @@ bot.on('document', async (ctx) => {
     return;
   }
 
-  // Документ принимаем только если ждём сырой текст или idle
+  // ── Если это заполненный файл встречи — сохраняем в output для saver.js ──
+  const isMeetingFile = /Файл встречи Дизайн Круга/i.test(doc.file_name || '');
+  if (isMeetingFile && ext === 'docx') {
+    try {
+      await ctx.reply(`📥 Получил заполненный файл встречи <b>${doc.file_name}</b>, сохраняю...`, { parse_mode: 'HTML' });
+      const fileLink = await ctx.telegram.getFileLink(doc.file_id);
+      const resp = await fetch(fileLink.href);
+      const buffer = Buffer.from(await resp.arrayBuffer());
+      saveToOutput(buffer, doc.file_name);
+      const url = getOneDriveFileUrl(doc.file_name);
+      await ctx.reply(
+        `✅ Файл сохранён! saver.js подхватит его в течение 2 минут и синхронизирует с OneDrive.\n\n` +
+        `📎 <a href="${url}">${doc.file_name}</a>`,
+        { parse_mode: 'HTML', disable_web_page_preview: true, ...mainMenu() }
+      );
+    } catch (err) {
+      console.error('Ошибка сохранения файла встречи:', err.message);
+      await ctx.reply(`❌ Ошибка сохранения: ${err.message}`, mainMenu());
+    }
+    return;
+  }
+
+
   if (session.stage !== 'waiting_raw_text' && session.stage !== 'idle') {
     await ctx.reply('Сначала нажми "📝 Создать протокол", затем пришли файл.');
     return;
