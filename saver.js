@@ -232,32 +232,101 @@ async function generateMeetingSummary() {
     ? `\n\nЭТАЛОН СТИЛЯ И СТРУКТУРЫ (строго следуй этому формату):\n${exampleText}`
     : '';
 
-  // GPT саммари
+  // GPT саммари + извлечение tensions параллельно
   let summary = '';
+  let tensionsBlock = '';
+  let tensionsJson = [];
   try {
-    const completion = await openai.chat.completions.create({
-      model: process.env.OPENAI_MODEL || 'gpt-4.1-mini',
-      messages: [
-        {
-          role: 'system',
-          content: `Ты — ассистент дизайн-команды. Напиши краткое и чёткое summary встречи на русском языке.\nСтрого следуй стилю, структуре и тону эталона ниже.\nИспользуй HTML теги для форматирования (<b>, <i>). Максимум 800 символов.${exampleBlock}`
-        },
-        {
-          role: 'user',
-          content: `Вот содержимое файла встречи Дизайн Круга от ${dateTag}:\n\n${rawText.substring(0, 6000)}`
-        }
-      ]
-    });
-    summary = completion.choices[0].message.content.trim();
+    const [summaryResp, tensionsResp] = await Promise.all([
+      openai.chat.completions.create({
+        model: process.env.OPENAI_MODEL || 'gpt-4.1-mini',
+        messages: [
+          {
+            role: 'system',
+            content: `Ты — ассистент дизайн-команды. Напиши краткое и чёткое summary встречи на русском языке.\nСтрого следуй стилю, структуре и тону эталона ниже.\nИспользуй HTML теги для форматирования (<b>, <i>). Максимум 800 символов.${exampleBlock}`
+          },
+          {
+            role: 'user',
+            content: `Вот содержимое файла встречи Дизайн Круга от ${dateTag}:\n\n${rawText.substring(0, 6000)}`
+          }
+        ]
+      }),
+      openai.chat.completions.create({
+        model: process.env.OPENAI_MODEL || 'gpt-4.1-mini',
+        messages: [
+          {
+            role: 'system',
+            content: `Ты — ассистент дизайн-команды. Извлеки tensions (напряжения/проблемы/вопросы) из протокола встречи.
+Верни ТОЛЬКО валидный JSON-массив объектов, без лишнего текста:
+[{"imya":"Имя","vopros":"Описание tension","reshili":"нет","status":"🔴 или 🟡"}]
+Если tensions нет — верни пустой массив [].
+Статус: 🔴 = критично/новое, 🟡 = в процессе/обсуждается.
+Не включай уже решённые tensions (если явно написано что решено).`
+          },
+          {
+            role: 'user',
+            content: `Протокол встречи Дизайн Круга от ${dateTag}:\n\n${rawText.substring(0, 6000)}`
+          }
+        ]
+      })
+    ]);
+
+    summary = summaryResp.choices[0].message.content.trim();
+
+    // Парсим tensions
+    try {
+      const raw = tensionsResp.choices[0].message.content.trim();
+      const jsonMatch = raw.match(/\[[\s\S]*\]/);
+      if (jsonMatch) {
+        tensionsJson = JSON.parse(jsonMatch[0]).map(t => ({
+          ...t,
+          reshili: t.reshili || 'нет',
+          dateAdded: new Date().toISOString()
+        }));
+      }
+    } catch (e) {
+      console.log('⚠️  Не удалось распарсить tensions JSON:', e.message);
+    }
+
+    // Формируем блок tensions для сообщения
+    if (tensionsJson.length > 0) {
+      const lines = tensionsJson.map(t => `${t.status || '🔴'} <b>${t.imya || '?'}</b>: ${t.vopros}`);
+      tensionsBlock = `\n\n📌 <b>Tensions встречи (${tensionsJson.length}):</b>\n${lines.join('\n')}`;
+    }
+
   } catch (e) {
     console.error('❌ Ошибка GPT:', e.message);
     if (NOTIFY_CHAT_ID) sendTelegramMessage(NOTIFY_CHAT_ID, `❌ Ошибка GPT при генерации саммари: ${e.message}`);
     return;
   }
 
+  // Сохраняем tensions на VPS через SSH
+  if (tensionsJson.length > 0) {
+    try {
+      const tensionsJsonStr = JSON.stringify(tensionsJson, null, 2).replace(/'/g, "'\\''");
+      execSync(
+        `sshpass -p '${VPS_PASS}' ssh -o StrictHostKeyChecking=no ${VPS_HOST} "echo '${tensionsJsonStr}' > /home/ubuntu/bcc-bot/tensions.json"`,
+        { timeout: 10000 }
+      );
+      console.log(`📌 Сохранено ${tensionsJson.length} tensions на VPS`);
+    } catch (e) {
+      console.error('⚠️  Не удалось сохранить tensions на VPS:', e.message);
+    }
+  }
+
+  const fullPreview = summary + tensionsBlock;
+
   // Сохраняем pending_summary для index.js (обработка кнопок подтверждения)
   const pendingPath = path.join(__dirname, 'pending_summary.json');
-  fs.writeFileSync(pendingPath, JSON.stringify({ summary, rawText: rawText.substring(0, 6000), dateTag, exampleBlock }, null, 2));
+  fs.writeFileSync(pendingPath, JSON.stringify({
+    summary: fullPreview,     // полный текст (саммари + tensions) — идёт в группу
+    summaryOnly: summary,      // только саммари — для регенерации с дополнением
+    tensionsBlock,
+    tensionsJson,
+    rawText: rawText.substring(0, 6000),
+    dateTag,
+    exampleBlock
+  }, null, 2));
 
   // Шлём только в личку на проверку — в группу отправит админ через бот
   const previewButtons = {
@@ -267,7 +336,7 @@ async function generateMeetingSummary() {
       [{ text: '❌ Отменить', callback_data: 'cancel_summary' }]
     ]
   };
-  sendTelegramMessage(NOTIFY_CHAT_ID, `👁 <b>Превью саммари встречи ${dateTag}:</b>\n\n${summary}`, previewButtons);
+  sendTelegramMessage(NOTIFY_CHAT_ID, `👁 <b>Превью саммари встречи ${dateTag}:</b>\n\n${fullPreview}`, previewButtons);
   console.log(`✅ Саммари сохранено, отправлено на проверку в ${NOTIFY_CHAT_ID}`);
 }
 

@@ -1037,14 +1037,17 @@ bot.on('text', async (ctx) => {
       await ctx.reply(`❌ Ошибка GPT: ${e.message}`, mainMenu());
       return;
     }
+    // Собираем полный текст: новое саммари + сохранённые tensions
+    const tensionsBlock = pending.tensionsBlock || '';
+    const fullSummary = newSummary + tensionsBlock;
     // Обновляем pending с новым summary
-    fs.writeFileSync(PENDING_SUMMARY_FILE, JSON.stringify({ ...pending, summary: newSummary }, null, 2));
+    fs.writeFileSync(PENDING_SUMMARY_FILE, JSON.stringify({ ...pending, summary: fullSummary, summaryOnly: newSummary }, null, 2));
     const previewButtons = Markup.inlineKeyboard([
       [Markup.button.callback('✅ Отправить в группу', 'send_summary_to_group')],
       [Markup.button.callback('➕ Добавить ещё', 'add_to_summary')],
       [Markup.button.callback('❌ Отменить', 'cancel_summary')]
     ]);
-    await ctx.reply(`👁 <b>Обновлённое саммари:</b>\n\n${newSummary}`, { parse_mode: 'HTML', ...previewButtons });
+    await ctx.reply(`👁 <b>Обновлённое саммари:</b>\n\n${fullSummary}`, { parse_mode: 'HTML', ...previewButtons });
     return;
   }
 
