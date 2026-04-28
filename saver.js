@@ -262,7 +262,7 @@ async function generateMeetingSummary() {
           },
           {
             role: 'user',
-            content: `Вот содержимое файла встречи Дизайн Круга от ${dateTag}:\n\n${rawText.substring(0, 6000)}`
+            content: `Вот содержимое файла встречи Дизайн Круга от ${dateTag}:\n\n${rawText}`
           }
         ]
       }),
@@ -296,7 +296,7 @@ async function generateMeetingSummary() {
           },
           {
             role: 'user',
-            content: `Протокол встречи Дизайн Круга от ${dateTag}:\n\n${rawText.substring(0, 6000)}`
+            content: `Протокол встречи Дизайн Круга от ${dateTag}:\n\n${rawText}`
           }
         ]
       })
@@ -365,7 +365,7 @@ async function generateMeetingSummary() {
     summaryOnly: summary,      // только саммари — для регенерации с дополнением
     tensionsBlock,
     tensionsJson,
-    rawText: rawText.substring(0, 6000),
+    rawText: rawText,
     dateTag,
     exampleBlock
   }, null, 2));

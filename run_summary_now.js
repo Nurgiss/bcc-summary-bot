@@ -76,7 +76,7 @@ console.log(`✅ Существует: ${fs.existsSync(filePath)}\n`);
 - Tensions НЕ включай — добавляются отдельно
 - Только HTML теги <b> и <i>, никаких <br> <ul> <div>
 - Не придумывай то чего нет в файле${exampleBlock}` },
-        { role: 'user', content: `Файл встречи Дизайн Круга от ${dateTag}:\n\n${rawText.substring(0, 6000)}` }
+        { role: 'user', content: `Файл встречи Дизайн Круга от ${dateTag}:\n\n${rawText}` }
       ]
     }),
     openai.chat.completions.create({
@@ -104,7 +104,7 @@ console.log(`✅ Существует: ${fs.existsSync(filePath)}\n`);
 
 Статус: 🔴 = новое/критично, 🟡 = в процессе/обсуждается.
 Если tensions нет — верни [].` },
-        { role: 'user', content: `Протокол встречи от ${dateTag}:\n\n${rawText.substring(0, 6000)}` }
+        { role: 'user', content: `Протокол встречи от ${dateTag}:\n\n${rawText}` }
       ]
     })
   ]);
@@ -158,7 +158,7 @@ ${t.vopros}`;
   fs.writeFileSync(PENDING_SUMMARY_FILE, JSON.stringify({
     summary: fullPreview, summaryOnly: summary,
     tensionsBlock, tensionsJson,
-    rawText: rawText.substring(0, 6000), dateTag, exampleBlock
+    rawText: rawText, dateTag, exampleBlock
   }, null, 2));
   console.log('✅ pending_summary.json сохранён\n');
 
