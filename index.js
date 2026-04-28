@@ -32,6 +32,15 @@ const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
 // ─── Хранение примера протокола на диске ─────────────────────────────────────
 const EXAMPLE_FILE = path.join(__dirname, 'example_protocol.txt');
+const PENDING_SUMMARY_FILE = path.join(__dirname, 'pending_summary.json');
+
+function loadPendingSummary() {
+  try { return JSON.parse(fs.readFileSync(PENDING_SUMMARY_FILE, 'utf8')); }
+  catch { return null; }
+}
+function clearPendingSummary() {
+  try { fs.unlinkSync(PENDING_SUMMARY_FILE); } catch {}
+}
 
 const DEFAULT_EXAMPLE = `📎 Протокол встречи дизайнеров 15 апреля 2025
 
@@ -1002,17 +1011,40 @@ bot.on('text', async (ctx) => {
 
   // ─── Дополнение к итогам встречи ─────────────────────────────────────────
   if (session.stage === 'waiting_summary_addition') {
-    const addition = `➕ <b>Дополнение к итогам:</b>\n\n${text}`;
-    session.pendingSummaryAddition = addition;
-    session.stage = 'confirm_summary_addition';
-    await ctx.reply(
-      `👀 <b>Превью дополнения:</b>\n\n${addition}\n\n─────────────────\nОтправить в группу?`,
-      { parse_mode: 'HTML', ...Markup.inlineKeyboard([
-        [Markup.button.callback('✅ Отправить в группу', 'summary_addition_confirm')],
-        [Markup.button.callback('✏️ Изменить', 'summary_addition_edit')],
-        [Markup.button.callback('❌ Отмена', 'summary_addition_cancel')]
-      ]) }
-    );
+    const pending = loadPendingSummary();
+    if (!pending) { session.stage = 'idle'; await ctx.reply('❌ Саммари не найдено.', mainMenu()); return; }
+    session.stage = 'idle';
+    await ctx.reply('⏳ Перегенерирую саммари с дополнением...');
+    let newSummary = '';
+    try {
+      const exampleText = loadExample();
+      const exampleBlock = exampleText ? `\n\nЭТАЛОН СТИЛЯ:\n${exampleText}` : '';
+      const completion = await openai.chat.completions.create({
+        model: OPENAI_MODEL,
+        messages: [
+          {
+            role: 'system',
+            content: `Ты — ассистент дизайн-команды. Напиши summary встречи на русском языке, строго следуя стилю эталона. HTML теги (<b>, <i>). Макс 800 символов.${exampleBlock}`
+          },
+          {
+            role: 'user',
+            content: `Исходный файл встречи (${pending.dateTag}):\n\n${pending.rawText}\n\nДОПОЛНЕНИЕ ОТ ОРГАНИЗАТОРА:\n${text}`
+          }
+        ]
+      });
+      newSummary = completion.choices[0].message.content.trim();
+    } catch (e) {
+      await ctx.reply(`❌ Ошибка GPT: ${e.message}`, mainMenu());
+      return;
+    }
+    // Обновляем pending с новым summary
+    fs.writeFileSync(PENDING_SUMMARY_FILE, JSON.stringify({ ...pending, summary: newSummary }, null, 2));
+    const previewButtons = Markup.inlineKeyboard([
+      [Markup.button.callback('✅ Отправить в группу', 'send_summary_to_group')],
+      [Markup.button.callback('➕ Добавить ещё', 'add_to_summary')],
+      [Markup.button.callback('❌ Отменить', 'cancel_summary')]
+    ]);
+    await ctx.reply(`👁 <b>Обновлённое саммари:</b>\n\n${newSummary}`, { parse_mode: 'HTML', ...previewButtons });
     return;
   }
 
@@ -1324,45 +1356,35 @@ bot.action(/^close_t_(\d+)$/, async (ctx) => {
 });
 
 // ─── Добавление к саммари встречи ───────────────────────────────────────────
+bot.action('send_summary_to_group', async (ctx) => {
+  await ctx.answerCbQuery();
+  const pending = loadPendingSummary();
+  if (!pending) { await ctx.reply('❌ Саммари не найдено. Возможно уже было отправлено.', mainMenu()); return; }
+  const targetChat = GROUP_CHAT_ID || NOTIFY_CHAT_ID;
+  try {
+    await bot.telegram.sendMessage(targetChat, pending.summary, { parse_mode: 'HTML' });
+    clearPendingSummary();
+    await ctx.editMessageReplyMarkup({ inline_keyboard: [] }).catch(() => {});
+    await ctx.reply('✅ Саммари отправлено в группу!', mainMenu());
+  } catch (e) {
+    await ctx.reply(`❌ Ошибка: ${e.message}`, mainMenu());
+  }
+});
+
 bot.action('add_to_summary', async (ctx) => {
   await ctx.answerCbQuery();
   const session = getOrCreateSession(ctx);
+  const pending = loadPendingSummary();
+  if (!pending) { await ctx.reply('❌ Саммари не найдено.', mainMenu()); return; }
   session.stage = 'waiting_summary_addition';
   await ctx.reply('💬 Напиши что добавить к итогам встречи:\n\n(Например: дополнительный пункт по задачам, важное решение или комментарий)');
 });
 
-bot.action('summary_addition_confirm', async (ctx) => {
+bot.action('cancel_summary', async (ctx) => {
   await ctx.answerCbQuery();
-  const session = getOrCreateSession(ctx);
-  const addition = session.pendingSummaryAddition;
-  session.stage = 'idle';
-  delete session.pendingSummaryAddition;
-  if (!addition) { await ctx.reply('❌ Нечего отправлять.', mainMenu()); return; }
-  const targetChat = GROUP_CHAT_ID || NOTIFY_CHAT_ID;
-  try {
-    await bot.telegram.sendMessage(targetChat, addition, { parse_mode: 'HTML' });
-    await ctx.editMessageReplyMarkup({ inline_keyboard: [] }).catch(() => {});
-    await ctx.reply('✅ Дополнение отправлено в группу!', mainMenu());
-  } catch (e) {
-    await ctx.reply(`❌ Не удалось отправить: ${e.message}`, mainMenu());
-  }
-});
-
-bot.action('summary_addition_edit', async (ctx) => {
-  await ctx.answerCbQuery();
-  const session = getOrCreateSession(ctx);
-  session.stage = 'waiting_summary_addition';
-  delete session.pendingSummaryAddition;
-  await ctx.reply('✏️ Напиши новый текст дополнения:');
-});
-
-bot.action('summary_addition_cancel', async (ctx) => {
-  await ctx.answerCbQuery();
-  const session = getOrCreateSession(ctx);
-  session.stage = 'idle';
-  delete session.pendingSummaryAddition;
+  clearPendingSummary();
   await ctx.editMessageReplyMarkup({ inline_keyboard: [] }).catch(() => {});
-  await ctx.reply('❌ Отменено.', mainMenu());
+  await ctx.reply('❌ Саммари отменено.', mainMenu());
 });
 
 // ─── Статистика ───────────────────────────────────────────────────────────────

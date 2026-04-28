@@ -255,13 +255,20 @@ async function generateMeetingSummary() {
     return;
   }
 
-  // Отправляем summary в группу с кнопкой «Добавить к итогам»
-  const targetChat = GROUP_CHAT_ID || NOTIFY_CHAT_ID;
-  const addButton = {
-    inline_keyboard: [[{ text: '➕ Добавить к итогам', callback_data: 'add_to_summary' }]]
+  // Сохраняем pending_summary для index.js (обработка кнопок подтверждения)
+  const pendingPath = path.join(__dirname, 'pending_summary.json');
+  fs.writeFileSync(pendingPath, JSON.stringify({ summary, rawText: rawText.substring(0, 6000), dateTag, exampleBlock }, null, 2));
+
+  // Шлём только в личку на проверку — в группу отправит админ через бот
+  const previewButtons = {
+    inline_keyboard: [
+      [{ text: '✅ Отправить в группу', callback_data: 'send_summary_to_group' }],
+      [{ text: '➕ Добавить к итогам', callback_data: 'add_to_summary' }],
+      [{ text: '❌ Отменить', callback_data: 'cancel_summary' }]
+    ]
   };
-  sendTelegramMessage(targetChat, summary, addButton);
-  console.log(`✅ Саммари отправлено в чат ${targetChat}`);
+  sendTelegramMessage(NOTIFY_CHAT_ID, `👁 <b>Превью саммари встречи ${dateTag}:</b>\n\n${summary}`, previewButtons);
+  console.log(`✅ Саммари сохранено, отправлено на проверку в ${NOTIFY_CHAT_ID}`);
 }
 
 // Вторник 13:30 Asia/Almaty
