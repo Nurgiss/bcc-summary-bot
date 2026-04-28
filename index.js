@@ -553,22 +553,26 @@ bot.command('testrotation', async (ctx) => {
   );
   const msgId = msg.message_id;
 
+  // Анимация — только рандом, ничего не сохраняем
+  let fakeVed, fakeSek;
   for (let i = 0; i < 7; i++) {
     await sleep(i < 4 ? 500 : 700);
-    const rv = team[Math.floor(Math.random() * team.length)];
-    const rs = team.filter(p => p !== rv)[Math.floor(Math.random() * (team.length - 1))];
+    fakeVed = team[Math.floor(Math.random() * team.length)];
+    fakeSek = team.filter(p => p !== fakeVed)[Math.floor(Math.random() * (team.length - 1))];
     const dots = '⏳'.repeat((i % 3) + 1);
     await bot.telegram.editMessageText(chatId, msgId, undefined,
-      `🎲 <b>Выбираем ведущего и секретаря на ${monthName}...</b>\n\n👤 Ведущий: ${dots} <i>${rv}</i>\n📝 Секретарь: ${dots} <i>${rs}</i>`,
+      `🎲 <b>Выбираем ведущего и секретаря на ${monthName}...</b>\n\n👤 Ведущий: ${dots} <i>${fakeVed}</i>\n📝 Секретарь: ${dots} <i>${fakeSek}</i>`,
       { parse_mode: 'HTML' }
     ).catch(() => {});
   }
 
-  const assignment = getMonthlyAssignment();
-  if (!assignment) return;
   await sleep(900);
+  // Показываем текущее реальное назначение (не меняем его)
+  const current = (data.history || []).slice(-1)[0];
+  const vedushiy = current?.vedushiy || fakeVed;
+  const sekretar = current?.sekretar || fakeSek;
   await bot.telegram.editMessageText(chatId, msgId, undefined,
-    `🎉 <b>Ротация на ${monthName} определена!</b>\n\n👑 Ведущий: <b>${assignment.vedushiy}</b>\n📋 Секретарь: <b>${assignment.sekretar}</b>\n\nВстречи каждый вторник в 11:30 — удачи! 💪\n\n<i>(это тест — в группу не отправлялось)</i>`,
+    `🎉 <b>Ротация на ${monthName} определена!</b>\n\n👑 Ведущий: <b>${vedushiy}</b>\n📋 Секретарь: <b>${sekretar}</b>\n\nВстречи каждый вторник в 11:30 — удачи! 💪\n\n<i>⚠️ Это тест — данные не изменены, в группу не отправлялось</i>`,
     { parse_mode: 'HTML' }
   ).catch(() => {});
 });
