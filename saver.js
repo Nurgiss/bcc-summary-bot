@@ -311,10 +311,15 @@ async function generateMeetingSummary() {
       const jsonMatch = raw.match(/\[[\s\S]*\]/);
       if (jsonMatch) {
         tensionsJson = JSON.parse(jsonMatch[0]).map(t => ({
-          ...t,
-          reshili: t.reshili || 'нет',
-          dateAdded: new Date().toISOString()
-        }));
+            imya:    t.imya    || t.person || t.name || t['имя'] || '',
+            vopros:  t.vopros  || t.tension || t.question || t['вопрос'] || '',
+            pochemu: t.pochemu || t.importance || t.why || t['почему'] || '',
+            shagi:   t.shagi   || (Array.isArray(t.possible_steps) ? t.possible_steps.join('; ') : t.possible_steps) || t.steps || t['шаги'] || '',
+            reshili: t.reshili || t.resolved || 'нет',
+            data:    t.data    || t.deadline || '',
+            status:  t.status  || '🔴',
+            dateAdded: new Date().toISOString()
+          }));
       }
     } catch (e) {
       console.log('⚠️  Не удалось распарсить tensions JSON:', e.message);
@@ -322,8 +327,14 @@ async function generateMeetingSummary() {
 
     // Формируем блок tensions для сообщения
     if (tensionsJson.length > 0) {
-      const lines = tensionsJson.map(t => `${t.status || '🔴'} <b>${t.imya || '?'}</b>: ${t.vopros}`);
-      tensionsBlock = `\n\n📌 <b>Tensions встречи (${tensionsJson.length}):</b>\n${lines.join('\n')}`;
+        const lines = tensionsJson.map(t => {
+          let s = `${t.status || '🔴'} <b>${t.imya || '?'} вызывает напряжение:</b>\n${t.vopros}`;
+          if (t.pochemu) s += `\n<i>Почему важно:</i> ${t.pochemu}`;
+          if (t.shagi)  s += `\n<i>Возможные шаги:</i> ${t.shagi}`;
+          if (t.data)   s += `\n<i>Дедлайн:</i> ${t.data}`;
+          return s;
+        });
+        tensionsBlock = `\n\n📌 <b>Tensions встречи (${tensionsJson.length}):</b>\n\n${lines.join('\n\n')}`;
     }
 
   } catch (e) {
