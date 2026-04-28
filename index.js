@@ -131,53 +131,58 @@ function loadSavedTensions() {
   return [];
 }
 
-function saveTensionsFromProtocol(protocolText) {
+async function saveTensionsFromRawText(rawText, dateTag) {
   try {
-    // Найти блок "Прошлые:" и "Новые:" внутри раздела Tensions
-    const tensionBlock = protocolText.match(/📌 Tensions?[\s\S]*?(?=\n🙏|\n💬|$)/i)?.[0] || '';
+    const resp = await openai.chat.completions.create({
+      model: OPENAI_MODEL,
+      messages: [
+        { role: 'system', content: `Ты — ассистент дизайн-команды. Извлеки tensions из протокола встречи Дизайн Круга.
 
-    // Парсим строки с эмодзи статуса
-    const lines = tensionBlock.split('\n').map(l => l.trim()).filter(l => /^[🔴🟡✅]/.test(l));
+ВАЖНО: mammoth читает таблицы Word слипая ячейки — данные одной строки таблицы идут подряд через переносы строк.
 
-    const tensions = lines
-      .filter(l => !/^✅/.test(l)) // убираем уже решённые
-      .map(line => {
-        // Формат: "🔴 Имя — описание" или "🔴 описание"
-        const statusMatch = line.match(/^([🔴🟡✅])\s+(.+)/u);
-        if (!statusMatch) return null;
-        const body = statusMatch[2];
-        const dashIdx = body.indexOf(' — ');
-        if (dashIdx > -1) {
-          return {
-            imya: body.slice(0, dashIdx).trim(),
-            vopros: body.slice(dashIdx + 3).trim(),
-            pochemu: '',
-            shagi: '',
-            reshili: 'Нет',
-            data: '',
-            status: statusMatch[1],
-            dateAdded: new Date().toISOString()
-          };
-        }
-        return {
-          imya: '',
-          vopros: body.trim(),
-          pochemu: '',
-          shagi: '',
-          reshili: 'Нет',
-          data: '',
-          status: statusMatch[1],
-          dateAdded: new Date().toISOString()
-        };
-      })
-      .filter(Boolean);
+Секция "❓ Tension" — колонки в таблице: Имя → Что вызывает напряжение/вопрос → Почему важно → Возможные шаги / Кто поможет
+Секция "Tension-ы с прошлой встречи" — колонки: Имя → Что вызывало → Почему важно → Шаги → Решили вопрос → Дата финала
+
+Правила разбивки на поля:
+1. imya = только имя человека (например "Нариман", "Дида") — без лишнего текста
+2. vopros = суть проблемы/вопроса — только из колонки "Что вызывает напряжение"
+3. pochemu = причина важности — только из колонки "Почему важно"
+4. shagi = шаги или кто поможет — только из колонки "Возможные шаги"
+5. НЕ смешивай содержимое полей между собой
+6. НЕ добавляй ничего от себя — только то что есть в тексте
+7. Если данных нет — пустая строка ""
+8. Для прошлых tensions: reshili="да" если решено, иначе "нет"
+
+Верни ТОЛЬКО валидный JSON-массив (без markdown-блоков, без пояснений):
+[{"imya":"Нариман","vopros":"В Jira меньше задач чем обсуждается на стендапах","pochemu":"Создаёт ощущение что работы нет, блокеры не видны вовремя","shagi":"Любая устная договорённость фиксируется в Jira с ответственным и результатом","reshili":"нет","data":"","status":"🔴"}]
+
+Статус: 🔴 = новое/критично, 🟡 = в процессе/обсуждается.
+Если tensions нет — верни [].` },
+        { role: 'user', content: `Протокол встречи от ${dateTag || 'сегодня'}:\n\n${rawText.substring(0, 6000)}` }
+      ]
+    });
+
+    const raw = resp.choices[0].message.content.trim();
+    const jsonMatch = raw.match(/\[[\s\S]*\]/);
+    if (!jsonMatch) { console.log('Tensions: пустой JSON от GPT'); return; }
+
+    const tensions = JSON.parse(jsonMatch[0]).map(t => ({
+      imya:    t.imya    || t.person || t.name || t['имя'] || '',
+      vopros:  t.vopros  || t.tension || t.question || t['вопрос'] || '',
+      pochemu: t.pochemu || t.importance || t.why || t['почему'] || '',
+      shagi:   t.shagi   || (Array.isArray(t.possible_steps) ? t.possible_steps.join('; ') : t.possible_steps) || t.steps || t['шаги'] || '',
+      reshili: t.reshili || t.resolved || 'нет',
+      data:    t.data    || t.deadline || '',
+      status:  t.status  || '🔴',
+      dateAdded: new Date().toISOString()
+    }));
 
     if (tensions.length > 0) {
       fs.writeFileSync(TENSIONS_FILE, JSON.stringify(tensions, null, 2), 'utf8');
-      console.log(`Сохранено ${tensions.length} tensions`);
+      console.log(`Сохранено ${tensions.length} tensions (GPT-извлечение)`);
     }
   } catch (e) {
-    console.error('Ошибка парсинга tensions:', e.message);
+    console.error('Ошибка извлечения tensions:', e.message);
   }
 }
 
@@ -1257,7 +1262,7 @@ PRAVILA:
         const finalProtocol = await generateProtocol(session);
         if (!finalProtocol) throw new Error('OpenAI вернул пустой ответ');
         await sendLongMessage(ctx, finalProtocol);
-        saveTensionsFromProtocol(finalProtocol);
+        saveTensionsFromRawText(session.rawText, session.answers.meetingDate).catch(e => console.error('tensions async:', e.message));
         session.lastProtocol = finalProtocol;
         session.stage = 'idle';
         await ctx.reply('✅ Готово! Что дальше?', Markup.inlineKeyboard([
