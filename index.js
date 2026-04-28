@@ -359,7 +359,7 @@ function mainMenu() {
     [Markup.button.callback('📋 Подготовить шаблон встречи', 'start_template')],
     [Markup.button.callback('📢 Отправить анонс в группу', 'announce_from_menu')],
     [Markup.button.callback('🎲 Ротация в группу', 'show_rotation')],
-    [Markup.button.callback('✅ Закрыть tensions', 'close_tensions_menu'), Markup.button.callback('📊 Статистика', 'show_stats')],
+    [Markup.button.callback('📌 Tensions', 'tensions_menu'), Markup.button.callback('📊 Статистика', 'show_stats')],
     [Markup.button.callback('👁 Посмотреть эталон', 'view_example'), Markup.button.callback('✏️ Обновить эталон', 'update_example')]
   ]);
 }
@@ -1323,27 +1323,77 @@ bot.action('send_to_group', async (ctx) => {
 });
 
 // ─── Закрытие tensions ───────────────────────────────────────────────────────
-bot.action('close_tensions_menu', async (ctx) => {
+// ─── Tensions меню ───────────────────────────────────────────────────────────
+function tensionsListMessage(tensions) {
+  if (tensions.length === 0) return '✅ Открытых tensions нет!';
+  return tensions.map((t, i) => {
+    const status = t.status || '🔴';
+    const imya = t.imya ? `<b>${t.imya}</b>: ` : '';
+    return `${status} ${imya}${t.vopros}`;
+  }).join('\n\n');
+}
+
+function tensionsListButtons(tensions) {
+  const buttons = tensions.map((t, i) => {
+    const status = t.status || '🔴';
+    const imya = t.imya ? `${t.imya}: ` : '';
+    const label = `${status} ${imya}${(t.vopros || '').slice(0, 40)}`;
+    return [Markup.button.callback(label, `tension_detail_${i}`)];
+  });
+  buttons.push([Markup.button.callback('🏠 Главное меню', 'go_main_menu')]);
+  return Markup.inlineKeyboard(buttons);
+}
+
+bot.action('tensions_menu', async (ctx) => {
   await ctx.answerCbQuery();
   const tensions = loadSavedTensions().filter(t => t.reshili !== 'да' && t.reshili !== 'Да');
   if (tensions.length === 0) {
-    await ctx.reply('✅ Нет открытых tensions!', mainMenu());
+    await ctx.reply('✅ Открытых tensions нет!', mainMenu());
     return;
   }
-  const buttons = tensions.map((t, i) =>
-    [Markup.button.callback(`✅ ${t.imya || '?'}: ${(t.vopros || '').slice(0, 35)}`, `close_t_${i}`)]
-  );
-  buttons.push([Markup.button.callback('🏠 Главное меню', 'go_main_menu')]);
-  await ctx.reply(`📋 <b>Открытые tensions (${tensions.length}):</b>\n\nНажми на tension чтобы отметить как решённый:`, { parse_mode: 'HTML', ...Markup.inlineKeyboard(buttons) });
+  const text = `📌 <b>Tensions (${tensions.length} открытых):</b>\n\n${tensionsListMessage(tensions)}\n\n👆 Нажми на tension чтобы открыть карточку`;
+  await ctx.reply(text, { parse_mode: 'HTML', ...tensionsListButtons(tensions) });
 });
 
-bot.action(/^close_t_(\d+)$/, async (ctx) => {
+// Обратная совместимость
+bot.action('close_tensions_menu', async (ctx) => {
+  await ctx.answerCbQuery();
+  ctx.callbackQuery.data = 'tensions_menu';
+  const tensions = loadSavedTensions().filter(t => t.reshili !== 'да' && t.reshili !== 'Да');
+  if (tensions.length === 0) { await ctx.reply('✅ Открытых tensions нет!', mainMenu()); return; }
+  const text = `📌 <b>Tensions (${tensions.length} открытых):</b>\n\n${tensionsListMessage(tensions)}\n\n👆 Нажми на tension чтобы открыть карточку`;
+  await ctx.reply(text, { parse_mode: 'HTML', ...tensionsListButtons(tensions) });
+});
+
+bot.action(/^tension_detail_(\d+)$/, async (ctx) => {
+  await ctx.answerCbQuery();
+  const idx = parseInt(ctx.match[1]);
+  const tensions = loadSavedTensions().filter(t => t.reshili !== 'да' && t.reshili !== 'Да');
+  const t = tensions[idx];
+  if (!t) { await ctx.reply('❌ Tension не найден.', mainMenu()); return; }
+  const dateAdded = t.dateAdded ? new Date(t.dateAdded).toLocaleDateString('ru-RU') : '?';
+  const days = t.dateAdded ? Math.floor((Date.now() - new Date(t.dateAdded)) / 86400000) : '?';
+  let card = `${t.status || '🔴'} <b>${t.imya || 'Без имени'}</b>\n\n`;
+  card += `📋 <b>Вопрос:</b>\n${t.vopros || '—'}\n\n`;
+  if (t.pochemu) card += `🤔 <b>Почему важно:</b>\n${t.pochemu}\n\n`;
+  if (t.shagi) card += `🚶 <b>Шаги / кто поможет:</b>\n${t.shagi}\n\n`;
+  card += `📅 Добавлен: ${dateAdded} (${days} дн. назад)`;
+  if (t.data) card += `\n⏰ Дедлайн: ${t.data}`;
+  const buttons = Markup.inlineKeyboard([
+    [Markup.button.callback('✅ Решено — закрыть', `t_close_${idx}`)],
+    [Markup.button.callback('🟡 В процессе', `t_inprogress_${idx}`)],
+    [Markup.button.callback('◀️ Назад к списку', 'tensions_menu')]
+  ]);
+  await ctx.reply(card, { parse_mode: 'HTML', ...buttons });
+});
+
+bot.action(/^t_close_(\d+)$/, async (ctx) => {
   await ctx.answerCbQuery();
   const idx = parseInt(ctx.match[1]);
   const all = loadSavedTensions();
   const open = all.filter(t => t.reshili !== 'да' && t.reshili !== 'Да');
-  if (!open[idx]) { await ctx.reply('❌ Tension не найден.', mainMenu()); return; }
   const target = open[idx];
+  if (!target) { await ctx.reply('❌ Tension не найден.', mainMenu()); return; }
   const allIdx = all.findIndex(t => t.imya === target.imya && t.vopros === target.vopros);
   if (allIdx !== -1) {
     all[allIdx].reshili = 'да';
@@ -1352,14 +1402,49 @@ bot.action(/^close_t_(\d+)$/, async (ctx) => {
   }
   const remaining = all.filter(t => t.reshili !== 'да' && t.reshili !== 'Да');
   if (remaining.length === 0) {
-    await ctx.reply(`✅ <b>${target.imya}</b>: закрыт!\n\nВсе tensions закрыты 🎉`, { parse_mode: 'HTML', ...mainMenu() });
+    await ctx.reply(`✅ <b>${target.imya || target.vopros.slice(0,40)}</b> закрыт!\n\nВсе tensions закрыты 🎉`, { parse_mode: 'HTML', ...mainMenu() });
     return;
   }
-  const buttons = remaining.map((t, i) =>
-    [Markup.button.callback(`✅ ${t.imya || '?'}: ${(t.vopros || '').slice(0, 35)}`, `close_t_${i}`)]
-  );
-  buttons.push([Markup.button.callback('🏠 Главное меню', 'go_main_menu')]);
-  await ctx.reply(`✅ <b>${target.imya}</b> закрыт!\n\nОсталось открытых: ${remaining.length}`, { parse_mode: 'HTML', ...Markup.inlineKeyboard(buttons) });
+  const text = `✅ Закрыт!\n\n📌 <b>Осталось tensions (${remaining.length}):</b>\n\n${tensionsListMessage(remaining)}`;
+  await ctx.reply(text, { parse_mode: 'HTML', ...tensionsListButtons(remaining) });
+});
+
+bot.action(/^t_inprogress_(\d+)$/, async (ctx) => {
+  await ctx.answerCbQuery();
+  const idx = parseInt(ctx.match[1]);
+  const all = loadSavedTensions();
+  const open = all.filter(t => t.reshili !== 'да' && t.reshili !== 'Да');
+  const target = open[idx];
+  if (!target) { await ctx.reply('❌ Tension не найден.', mainMenu()); return; }
+  const allIdx = all.findIndex(t => t.imya === target.imya && t.vopros === target.vopros);
+  if (allIdx !== -1) {
+    all[allIdx].reshili = 'в процессе';
+    all[allIdx].status = '🟡';
+    fs.writeFileSync(TENSIONS_FILE, JSON.stringify(all, null, 2), 'utf8');
+  }
+  await ctx.reply(`🟡 Отмечено «в процессе».`, { parse_mode: 'HTML', ...tensionsListButtons(all.filter(t => t.reshili !== 'да' && t.reshili !== 'Да')) });
+});
+
+bot.action(/^close_t_(\d+)$/, async (ctx) => {
+  // legacy — редиректим на новый обработчик
+  await ctx.answerCbQuery();
+  const idx = parseInt(ctx.match[1]);
+  const all = loadSavedTensions();
+  const open = all.filter(t => t.reshili !== 'да' && t.reshili !== 'Да');
+  const target = open[idx];
+  if (!target) { await ctx.reply('❌ Tension не найден.', mainMenu()); return; }
+  const allIdx = all.findIndex(t => t.imya === target.imya && t.vopros === target.vopros);
+  if (allIdx !== -1) {
+    all[allIdx].reshili = 'да';
+    all[allIdx].dateClosed = new Date().toISOString();
+    fs.writeFileSync(TENSIONS_FILE, JSON.stringify(all, null, 2), 'utf8');
+  }
+  const remaining = all.filter(t => t.reshili !== 'да' && t.reshili !== 'Да');
+  if (remaining.length === 0) {
+    await ctx.reply(`✅ Все tensions закрыты 🎉`, mainMenu());
+    return;
+  }
+  await ctx.reply(`✅ Закрыт! Осталось: ${remaining.length}`, { parse_mode: 'HTML', ...tensionsListButtons(remaining) });
 });
 
 // ─── Добавление к саммари встречи ───────────────────────────────────────────
