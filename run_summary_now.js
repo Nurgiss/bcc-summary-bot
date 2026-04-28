@@ -66,13 +66,12 @@ console.log(`✅ Существует: ${fs.existsSync(filePath)}\n`);
 1. Заголовок: дата, ведущий, секретарь
 2. 🏖️ Графики отпусков — кто и когда
 3. ✨ Изменения в дизайн-системе
-4. 👉 Задачи — ОЧЕНЬ КРАТКО, 1 строка на человека: <b>Имя</b> — над чем работает
 5. 📌 Пересечения и решения — подробно
 6. 📢 Новости и обучение — подробно
 7. 🙏 Благодарности — подробно
 
 ПРАВИЛА:
-- Задачи: максимум 1 строка на человека, только суть, без деталей
+- Задачи дизайнеров НЕ пиши — вместо этого будет ссылка на файл
 - Пересечения, новости, благодарности — пиши полностью
 - Tensions НЕ включай — добавляются отдельно
 - Только HTML теги <b> и <i>, никаких <br> <ul> <div>
@@ -142,8 +141,13 @@ ${t.vopros}`;
     }
   } catch(e) { console.log('⚠️  Tensions не распарсились'); }
 
-  const fullPreview = (summary + tensionsBlock)
-    .replace(/<br\s*\/?>/gi, '\n')       // <br> → перенос
+  // Ссылка на файл встречи (вместо раздела задач)
+  const SHAREPOINT_BASE = process.env.SHAREPOINT_BASE || 'https://bcckz0-my.sharepoint.com/personal/nurgissa_anuarbek_bcc_kz';
+  const fileUrl = `${SHAREPOINT_BASE}/:w:/r/Documents/Meetings/${encodeURIComponent('Дизайн Круга/')}${encodeURIComponent(fileName)}?d=w&csf=1&web=1`;
+  const fileLink = `\n\n👉 <b>Задачи дизайнеров:</b> <a href="${fileUrl}">Открыть файл встречи</a>`;
+
+  const fullPreview = (summary + fileLink + tensionsBlock)
+    .replace(/<br\s*\/?>/gi, '\n')
     .replace(/<(?!\/?(b|i|a|code|pre)\b)[^>]+>/gi, ''); // убираем все теги кроме разрешённых Telegram
 
   console.log('─── САММАРИ ───────────────────────────────');
@@ -158,61 +162,18 @@ ${t.vopros}`;
   }, null, 2));
   console.log('✅ pending_summary.json сохранён\n');
 
-  // Отправляем превью в личку — разбиваем если длиннее 4096
+  // Отправляем превью в личку одним сообщением
   const https = require('https');
-  const MAX = 3900;
-
-  function tgPost(endpoint, body) {
-    return new Promise((resolve, reject) => {
-      const payload = JSON.stringify(body);
-      const req = https.request(`https://api.telegram.org/bot${BOT_TOKEN}/${endpoint}`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) }
-      }, res => { let b = ''; res.on('data', d => b += d); res.on('end', () => resolve(JSON.parse(b))); });
-      req.on('error', reject);
-      req.write(payload); req.end();
-    });
-  }
-
   const previewButtons = { inline_keyboard: [
     [{ text: '✅ Отправить в группу', callback_data: 'send_summary_to_group' }],
     [{ text: '➕ Добавить к итогам', callback_data: 'add_to_summary' }],
     [{ text: '❌ Отменить', callback_data: 'cancel_summary' }]
   ]};
-
-  const summaryClean = summary
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<(?!\/?(b|i|a|code|pre)\b)[^>]+>/gi, '');
-
-  const tensionsClean = tensionsBlock
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<(?!\/?(b|i|a|code|pre)\b)[^>]+>/gi, '');
-
-  const header = `👁 <b>Превью саммари встречи ${dateTag}:</b>\n\n`;
-
-  // Первое сообщение — саммари + кнопки
-  const firstMsg = header + summaryClean;
-  const r1 = await tgPost('sendMessage', {
-    chat_id: NOTIFY_CHAT_ID, text: firstMsg.slice(0, MAX),
-    parse_mode: 'HTML', disable_web_page_preview: true,
-    reply_markup: tensionsClean ? undefined : previewButtons
+  const msgText = `👁 <b>Превью саммари встречи ${dateTag}:</b>\n\n${fullPreview}`;
+  const payload = JSON.stringify({ chat_id: NOTIFY_CHAT_ID, text: msgText, parse_mode: 'HTML', disable_web_page_preview: true, reply_markup: previewButtons });
+  const req = https.request(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) } }, res => {
+    let b = ''; res.on('data', d => b += d);
+    res.on('end', () => { const r = JSON.parse(b); console.log(r.ok ? '📨 Отправлено в личку!' : '❌ ' + r.description); });
   });
-  console.log(r1.ok ? '📨 Саммари отправлено!' : '❌ ' + r1.description);
-
-  // Tensions — отдельными кусками если нужно
-  if (tensionsClean) {
-    let remaining = tensionsClean.trim();
-    let isFirst = true;
-    while (remaining.length > 0) {
-      const chunk = remaining.slice(0, MAX);
-      remaining = remaining.slice(MAX);
-      const isLast = remaining.length === 0;
-      const r = await tgPost('sendMessage', {
-        chat_id: NOTIFY_CHAT_ID, text: chunk,
-        parse_mode: 'HTML', disable_web_page_preview: true,
-        reply_markup: isLast ? previewButtons : undefined
-      });
-      console.log(r.ok ? `📨 Tensions часть отправлена` : '❌ ' + r.description);
-      isFirst = false;
-    }
-  }
+  req.write(payload); req.end();
 })().catch(e => console.error('❌', e.message));
